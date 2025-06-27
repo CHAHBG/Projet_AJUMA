@@ -20,7 +20,7 @@ import { useAuth } from './contexts/AuthContext';
 
 function App() {
   const { isAuthenticated } = useAuth();
-
+  
   return (
     <Routes>
       {/* Route de connexion accessible publiquement */}
@@ -34,20 +34,32 @@ function App() {
       }>
         {/* Tableau de bord - page d'accueil */}
         <Route index element={<Dashboard />} />
+        
         {/* Carte interactive */}
         <Route path="map" element={<MapExplorer />} />
+        
+        {/* Carte avec dataset spécifique */}
+        <Route path="map/:id" element={<MapExplorer />} />
+        
         {/* Catalogue de données */}
+        <Route path="catalog" element={<DataCatalog />} />
         <Route path="data" element={<DataCatalog />} />
+        
         {/* Gestion des circuits de collecte */}
         <Route path="collection" element={<CollectionRoutes />} />
+        
         {/* Gestion des circuits de balayage */}
         <Route path="sweeping" element={<SweepingRoutes />} />
+        
         {/* Gestion du mobilier urbain */}
         <Route path="furniture" element={<UrbanFurniture />} />
+        
         {/* Structure de la base de données */}
         <Route path="database" element={<DatabaseSchema />} />
+        
         {/* Paramètres (admin uniquement) */}
         <Route path="settings" element={<Settings />} />
+        
         {/* Profil utilisateur */}
         <Route path="profile" element={<Profile />} />
       </Route>
@@ -58,4 +70,4 @@ function App() {
   );
 }
 
-export default App
+export default App;

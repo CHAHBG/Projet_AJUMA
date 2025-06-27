@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import Papa from "papaparse";
 import shp from "shpjs";
+import JSZip from "jszip";
 import { db, supabase } from "../lib/supabase";
 import {
   Download,
@@ -20,6 +21,7 @@ import {
   AlertCircle,
   CheckCircle
 } from 'lucide-react';
+import { useNavigate } from "react-router-dom";
 
 type DatasetMetadata = {
   id: string;
@@ -95,6 +97,9 @@ const DataCatalog = () => {
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [shpDebugFileList, setShpDebugFileList] = useState<string[] | null>(null);
+
+  const navigate = useNavigate();
 
   useEffect(() => {
     fetchDatasets();
@@ -134,6 +139,7 @@ const DataCatalog = () => {
     setUploadStatus(null);
     setUploadError(null);
     setIsUploading(false);
+    setShpDebugFileList(null);
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -157,13 +163,14 @@ const DataCatalog = () => {
     setIsUploading(true);
     setUploadStatus("Traitement en cours...");
     setUploadError(null);
+    setShpDebugFileList(null);
 
     try {
       if (uploadType === "GeoJSON") {
         const text = await uploadFile.text();
         const geojson = JSON.parse(text);
-        const { error } = await db.uploadGeoJSON(geojson, "collection_points");
-        if (error) throw error;
+        const result = await db.uploadGeoJSON(geojson, "collection_points");
+        if ((result as any).error) throw (result as any).error;
       } else if (uploadType === "CSV") {
         const text = await uploadFile.text();
         const csv = Papa.parse(text, { header: true, dynamicTyping: true, skipEmptyLines: true });
@@ -183,17 +190,36 @@ const DataCatalog = () => {
       } else if (uploadType === "SHP") {
         try {
           const arrayBuffer = await uploadFile.arrayBuffer();
+          // DEBUG : Afficher la liste des fichiers contenus dans le ZIP
+          const jszip = await JSZip.loadAsync(arrayBuffer);
+          const fileNames = Object.keys(jszip.files);
+          setShpDebugFileList(fileNames);
+
+          // Vérification basique : présence .shp/.dbf/.shx
+          const lowerFiles = fileNames.map(x => x.toLowerCase());
+          if (
+            !lowerFiles.some(x => x.endsWith('.shp')) ||
+            !lowerFiles.some(x => x.endsWith('.dbf')) ||
+            !lowerFiles.some(x => x.endsWith('.shx'))
+          ) {
+            throw new Error(
+              `Le fichier ZIP doit contenir au moins : .shp, .shx, .dbf. Fichiers trouvés : ${fileNames.join(', ')}`
+            );
+          }
+
+          // On tente le parsing
           const geojson = await shp(arrayBuffer);
-          const { error } = await db.uploadGeoJSON(geojson, "collection_points");
-          if (error) throw error;
+          const result = await db.uploadGeoJSON(geojson, "collection_points");
+          if ((result as any).error) throw (result as any).error;
         } catch (err: any) {
-          setUploadError(
-            "Impossible de traiter le fichier Shapefile. Vérifiez que le ZIP contient les fichiers .shp, .shx, .dbf. " +
-            (err.message || "")
-          );
-          setUploadStatus(null);
-          setIsUploading(false);
-          return;
+           console.error("Erreur complète du parsing shpjs:", err, JSON.stringify(err, null, 2));
+           setUploadError(
+             "Impossible de traiter le fichier Shapefile. Vérifiez que le ZIP contient les fichiers .shp, .shx, .dbf. " +
+             (err.message || "")
+           );
+           setUploadStatus(null);
+           setIsUploading(false);
+           return;
         }
       } else if (uploadType === "PDF") {
         const { data, error } = await supabase.storage
@@ -214,6 +240,105 @@ const DataCatalog = () => {
       setUploadStatus(null);
     } finally {
       setIsUploading(false);
+    }
+  };
+
+const handleVisualiser = async (dataset: DatasetMetadata) => {
+  try {
+    let datasetGeoJSON = null;
+    
+    // Convertir les données selon le format
+    if (dataset.format === "GeoJSON" && dataset.source === "Supabase") {
+      // Récupérer les données depuis Supabase
+      const { data, error } = await db.collectionPoints.getById(dataset.id);
+      if (!error && data) {
+        datasetGeoJSON = {
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              geometry: {
+                type: "Point",
+                coordinates: [data.longitude, data.latitude]
+              },
+              properties: {
+                id: data.id,
+                name: data.name,
+                type: data.type,
+                commune_id: data.commune_id,
+                capacity_kg: data.capacity_kg,
+                waste_type: data.waste_type,
+                status: data.status
+              }
+            }
+          ]
+        };
+      }
+    } else if (dataset.format === "GeoJSON" && dataset.source !== "Supabase") {
+      // Pour les datasets mockés, vous devriez avoir les données quelque part
+      // Ici, on crée un exemple
+      datasetGeoJSON = {
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            geometry: {
+              type: "Point",
+              coordinates: [-17.4441, 14.6928] // Coordonnées de Dakar
+            },
+            properties: {
+              name: dataset.name,
+              description: dataset.description,
+              category: dataset.category
+            }
+          }
+        ]
+      };
+    }
+    
+    // Naviguer vers MapExplorer avec les données
+    navigate('/map', { 
+      state: { 
+        dataset,
+        datasetGeoJSON,
+        focusedDataset: dataset
+      } 
+    });
+  } catch (error) {
+    console.error('Erreur lors de la visualisation:', error);
+    alert('Erreur lors du chargement des données pour la visualisation');
+  }
+};
+
+  const handleDownload = async (dataset: DatasetMetadata) => {
+    if (dataset.fileUrl) {
+      window.open(dataset.fileUrl, "_blank");
+    } else if (dataset.format === "GeoJSON") {
+      const { data, error } = await db.collectionPoints.getById(dataset.id);
+      if (!error && data) {
+        const geojson = {
+          type: "FeatureCollection",
+          features: [
+            {
+              type: "Feature",
+              geometry: {
+                type: "Point",
+                coordinates: [data.longitude, data.latitude]
+              },
+              properties: data
+            }
+          ]
+        };
+        const blob = new Blob([JSON.stringify(geojson, null, 2)], { type: "application/geo+json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${dataset.name.replace(/\s+/g, "_")}.geojson`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    } else {
+      alert("Téléchargement non disponible pour ce format.");
     }
   };
 
@@ -391,6 +516,15 @@ const DataCatalog = () => {
                       </div>
                     </div>
                   </div>
+                  {/* Debug list for SHP zip content */}
+                  {uploadType === "SHP" && shpDebugFileList && (
+                    <div className="p-2 bg-yellow-50 rounded text-xs mt-2">
+                      <strong>Fichiers trouvés dans le ZIP :</strong>
+                      <ul className="list-disc list-inside">
+                        {shpDebugFileList.map(f => <li key={f}>{f}</li>)}
+                      </ul>
+                    </div>
+                  )}
                   {uploadStatus && (
                     <div className="flex items-center p-3 bg-blue-50 rounded-md">
                       <CheckCircle size={16} className="text-blue-500 mr-2" />
@@ -569,10 +703,16 @@ const DataCatalog = () => {
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                      <button className="text-green-600 hover:text-green-700 mr-3">
+                      <button
+                        className="text-green-600 hover:text-green-700 mr-3"
+                        onClick={() => handleVisualiser(dataset)}
+                      >
                         Visualiser
                       </button>
-                      <button className="text-green-600 hover:text-green-700 flex items-center inline-flex">
+                      <button
+                        className="text-green-600 hover:text-green-700 flex items-center inline-flex"
+                        onClick={() => handleDownload(dataset)}
+                      >
                         <Download size={16} className="mr-1" />
                         Télécharger
                       </button>
